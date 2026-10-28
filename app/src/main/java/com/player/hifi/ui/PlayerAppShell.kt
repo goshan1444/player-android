@@ -7,16 +7,16 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,7 +50,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,11 +58,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -79,7 +76,6 @@ import com.player.hifi.ui.screens.SettingsScreen
 import com.player.hifi.ui.screens.SleepTimerDialog
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 enum class MainTab(val label: String) {
     HOME("Home"),
@@ -142,13 +138,9 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
         viewModel.rescanLibrary()
     }
 
-    BackHandler(enabled = showNowPlaying || pagerState.currentPage != 0) {
-        if (showNowPlaying) {
-            showNowPlaying = false
-        } else {
-            coroutineScope.launch {
-                pagerState.animateScrollToPage(0)
-            }
+    BackHandler(enabled = !showNowPlaying && pagerState.currentPage != 0) {
+        coroutineScope.launch {
+            pagerState.animateScrollToPage(0)
         }
     }
 
@@ -156,10 +148,23 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
         Scaffold(
             bottomBar = {
                 Column {
+                    // Mini player — плавное появление/исчезновение снизу
                     AnimatedVisibility(
                         visible = currentTrack != null && !showNowPlaying,
-                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                        enter = slideInVertically(
+                            initialOffsetY = { it },
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) + fadeIn(tween(200)),
+                        exit = slideOutVertically(
+                            targetOffsetY = { it },
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) + fadeOut(tween(150))
                     ) {
                         currentTrack?.let { track ->
                             val totalDur = durationMs.takeIf { it > 0 } ?: track.durationMs.coerceAtLeast(1L)
@@ -170,7 +175,6 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
                                 progress = progress,
                                 onTogglePlay = viewModel::togglePlayPause,
                                 onSkipNext = viewModel::skipNext,
-                                onSkipPrevious = viewModel::skipPrevious,
                                 onExpand = { showNowPlaying = true }
                             )
                         }
@@ -216,7 +220,6 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
                     .padding(innerPadding)
                     .fillMaxSize()
             ) {
-                // Страницы меню двигаются строго за пальцем (1-в-1 с прогрессом свайпа)
                 HorizontalPager(
                     state = pagerState,
                     beyondViewportPageCount = 1,
@@ -273,22 +276,14 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
             }
         }
 
+        // NowPlaying fullscreen overlay — плавный слайд вверх/вниз
         AnimatedVisibility(
             visible = showNowPlaying && currentTrack != null,
             enter = slideInVertically(
                 initialOffsetY = { fullHeight -> fullHeight },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            ) + fadeIn(),
-            exit = slideOutVertically(
-                targetOffsetY = { fullHeight -> fullHeight },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            ) + fadeOut()
+                animationSpec = tween(durationMillis = 280, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+            ) + fadeIn(tween(150)),
+            exit = ExitTransition.None
         ) {
             NowPlayingFullScreen(
                 viewModel = viewModel,
@@ -311,6 +306,10 @@ fun PlayerAppShell(viewModel: PlayerViewModel) {
     }
 }
 
+/**
+ * Mini player bar — без свайп-жестов (они убраны по запросу).
+ * Только кнопки Play/Pause, Next и клик для открытия NowPlaying.
+ */
 @Composable
 private fun MiniPlayerBar(
     track: Track,
@@ -318,64 +317,13 @@ private fun MiniPlayerBar(
     progress: Float,
     onTogglePlay: () -> Unit,
     onSkipNext: () -> Unit,
-    onSkipPrevious: () -> Unit,
     onExpand: () -> Unit
 ) {
-    val haptics = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    val dragOffsetX = remember { Animatable(0f) }
-    var dragY by remember { mutableFloatStateOf(0f) }
-
     Surface(
         tonalElevation = 6.dp,
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onExpand)
-            .pointerInput(track.id) {
-                detectDragGestures(
-                    onDragStart = {
-                        dragY = 0f
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        dragY += dragAmount.y
-                        scope.launch {
-                            dragOffsetX.snapTo((dragOffsetX.value + dragAmount.x).coerceIn(-220f, 220f))
-                        }
-                    },
-                    onDragCancel = {
-                        dragY = 0f
-                        scope.launch { dragOffsetX.animateTo(0f, spring()) }
-                    },
-                    onDragEnd = {
-                        val finalX = dragOffsetX.value
-                        when {
-                            dragY < -60f && abs(dragY) > abs(finalX) -> {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onExpand()
-                            }
-                            finalX < -95f && abs(finalX) > abs(dragY) -> {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onSkipNext()
-                            }
-                            finalX > 95f && abs(finalX) > abs(dragY) -> {
-                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onSkipPrevious()
-                            }
-                        }
-                        dragY = 0f
-                        scope.launch {
-                            dragOffsetX.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessMedium
-                                )
-                            )
-                        }
-                    }
-                )
-            }
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             LinearProgressIndicator(
@@ -386,7 +334,6 @@ private fun MiniPlayerBar(
             )
             Row(
                 modifier = Modifier
-                    .offset { IntOffset(dragOffsetX.value.roundToInt(), 0) }
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

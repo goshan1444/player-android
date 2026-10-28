@@ -3,6 +3,7 @@ package com.player.hifi.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -51,12 +52,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -117,6 +115,39 @@ fun HomeScreen(
             } else {
                 IconButton(onClick = viewModel::rescanLibrary) {
                     Icon(Icons.Default.Refresh, contentDescription = "Rescan Library")
+                }
+            }
+        }
+
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val hasAllFilesAccess = remember(tracks) { viewModel.hasAllFilesAccess() }
+
+        if (!hasAllFilesAccess) {
+            Card(
+                colors = androidx.compose.material3.CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Доступ ко всем файлам (CUE и обложки)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Для автоматического чтения CUE-файлов, текстов песен и сохранения локальных обложек альбомов предоставьте доступ к управлению файлами.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = { viewModel.requestAllFilesAccess(context) }) {
+                        Text("Разрешить доступ ко всем файлам")
+                    }
                 }
             }
         }
@@ -265,7 +296,6 @@ fun LibraryScreen(viewModel: PlayerViewModel) {
             }
         }
 
-        // Горизонтальное пролистывание подразделов Библиотеки (Tracks <-> Albums <-> Artists)
         HorizontalPager(
             state = subPagerState,
             modifier = Modifier.fillMaxSize()
@@ -300,8 +330,38 @@ fun LibraryScreen(viewModel: PlayerViewModel) {
                 1 -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(albums, key = { it.albumKey }) { album ->
                         ListItem(
-                            headlineContent = { Text(album.title, fontWeight = FontWeight.SemiBold) },
-                            supportingContent = { Text("${album.artist} · ${album.trackCount} tracks") },
+                            headlineContent = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = album.title,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (album.isCueAlbum) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                                        ) {
+                                            Text(
+                                                text = "CUE",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            supportingContent = {
+                                val cueSuffix = if (album.isCueAlbum) " · CUE Sheet Album" else ""
+                                Text("${album.artist} · ${album.trackCount} tracks$cueSuffix")
+                            },
                             modifier = Modifier
                                 .animateItem()
                                 .clickable { viewModel.playTracks(album.tracks, 0) }
@@ -362,8 +422,8 @@ private fun AlphabetFastScroller(
     ) {
         AnimatedVisibility(
             visible = activeLetter != null,
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut()
+            enter = fadeIn(tween(150)) + scaleIn(tween(150)),
+            exit = fadeOut(tween(150)) + scaleOut(tween(150))
         ) {
             Surface(
                 shape = CircleShape,
@@ -439,7 +499,10 @@ private fun HomeSectionHeader(title: String) {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Простая карточка трека без свайп-жестов.
+ * Свайп убран по запросу — кнопка Play Next справа.
+ */
 @Composable
 fun SharedTrackRow(
     track: Track,
@@ -448,76 +511,66 @@ fun SharedTrackRow(
     onToggleFavorite: () -> Unit = {}
 ) {
     val haptics = LocalHapticFeedback.current
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onPlayNext()
-                    false
-                }
-                SwipeToDismissBoxValue.EndToStart -> {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onToggleFavorite()
-                    false
-                }
-                SwipeToDismissBoxValue.Settled -> false
-            }
-        }
-    )
 
-    SwipeToDismissBox(
-        state = dismissState,
-        backgroundContent = {
-            val direction = dismissState.dismissDirection
-            val bgColor = when (direction) {
-                SwipeToDismissBoxValue.StartToEnd -> MaterialTheme.colorScheme.primaryContainer
-                SwipeToDismissBoxValue.EndToStart -> MaterialTheme.colorScheme.secondaryContainer
-                else -> MaterialTheme.colorScheme.surface
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(bgColor)
-                    .padding(horizontal = 20.dp),
-                contentAlignment = if (direction == SwipeToDismissBoxValue.StartToEnd) {
-                    Alignment.CenterStart
-                } else {
-                    Alignment.CenterEnd
-                }
+    ListItem(
+        headlineContent = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (direction == SwipeToDismissBoxValue.StartToEnd) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.PlaylistPlay, contentDescription = null)
-                        Text("Play Next", fontWeight = FontWeight.Bold)
-                    }
-                } else if (direction == SwipeToDismissBoxValue.EndToStart) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (track.isFavorite) "Unfavorite" else "Favorite", fontWeight = FontWeight.Bold)
-                        Icon(Icons.Default.Favorite, contentDescription = null)
-                    }
-                }
-            }
-        }
-    ) {
-        ListItem(
-            headlineContent = {
-                Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-            },
-            supportingContent = {
                 Text(
-                    text = "${track.artist} · ${track.sourceMetadata.toPrimaryTechnicalLine()}",
+                    text = track.title,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-            },
-            trailingContent = {
-                IconButton(onClick = onPlayNext) {
+                if (track.isCueTrack) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    ) {
+                        Text(
+                            text = "CUE",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+            }
+        },
+        supportingContent = {
+            val cueInfo = if (track.isCueTrack) " · CUE" else ""
+            Text(
+                text = "${track.artist} · ${track.sourceMetadata.toPrimaryTechnicalLine()}$cueInfo",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall
+            )
+        },
+        trailingContent = {
+            Row {
+                IconButton(onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onToggleFavorite()
+                }) {
+                    Icon(
+                        imageVector = if (track.isFavorite) Icons.Default.Favorite else Icons.Default.Favorite,
+                        contentDescription = "Favorite",
+                        tint = if (track.isFavorite) MaterialTheme.colorScheme.primary
+                               else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                }
+                IconButton(onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onPlayNext()
+                }) {
                     Icon(Icons.Default.PlaylistPlay, contentDescription = "Play Next")
                 }
-            },
-            modifier = Modifier.clickable(onClick = onClick)
-        )
-    }
+            }
+        },
+        modifier = Modifier.clickable(onClick = onClick)
+    )
 }

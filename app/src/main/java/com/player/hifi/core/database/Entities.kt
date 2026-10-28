@@ -41,7 +41,10 @@ data class TrackEntity(
     val replayGainAlbumDb: Float?,
     val replayGainTrackPeak: Float?,
     val replayGainAlbumPeak: Float?,
-    val metadataSource: String
+    val metadataSource: String,
+    // CUE sheet virtual track fields
+    val cueStartMs: Long? = null,
+    val cueEndMs: Long? = null
 ) {
     fun toDomain(): Track {
         val bitDepth = when (sourceBitDepthKind) {
@@ -81,7 +84,9 @@ data class TrackEntity(
                 replayGainTrackPeak = replayGainTrackPeak,
                 replayGainAlbumPeak = replayGainAlbumPeak,
                 metadataSource = runCatching { MetadataSource.valueOf(metadataSource) }.getOrDefault(MetadataSource.FALLBACK_MEDIASTORE)
-            )
+            ),
+            cueStartMs = cueStartMs,
+            cueEndMs = cueEndMs
         )
     }
 }

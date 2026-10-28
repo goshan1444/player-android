@@ -17,10 +17,15 @@ data class Track(
     val isFavorite: Boolean,
     val lastPlayedEpochMillis: Long?,
     val playCount: Int,
-    val sourceMetadata: SourceAudioMetadata
+    val sourceMetadata: SourceAudioMetadata,
+    // CUE sheet virtual track fields (null = regular file track)
+    val cueStartMs: Long? = null,
+    val cueEndMs: Long? = null
 ) {
     val albumKey: String
         get() = "${album.lowercase().trim()}::${albumArtist.ifBlank { artist }.lowercase().trim()}"
+
+    val isCueTrack: Boolean get() = cueStartMs != null
 }
 
 data class AlbumSummary(
@@ -30,7 +35,9 @@ data class AlbumSummary(
     val artworkUriString: String?,
     val trackCount: Int,
     val tracks: List<Track>
-)
+) {
+    val isCueAlbum: Boolean get() = tracks.any { it.isCueTrack }
+}
 
 data class ArtistSummary(
     val name: String,

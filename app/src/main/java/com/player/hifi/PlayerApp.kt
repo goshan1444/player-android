@@ -3,6 +3,7 @@ package com.player.hifi
 import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
@@ -35,7 +36,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-class AppContainer(private val app: Application) : PlayerController {
+class AppContainer(val app: Application) : PlayerController {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val database = PlayerDatabase.getInstance(app)
     val preferences = PlayerPreferencesRepository(app)
@@ -319,13 +320,27 @@ class AppContainer(private val app: Application) : PlayerController {
             .setTitle(title)
             .setArtist(artist)
             .setAlbumTitle(album)
+            .setTrackNumber(trackNumber)
             .setArtworkUri(artworkUriString?.let { Uri.parse(it) })
             .build()
-        return MediaItem.Builder()
+
+        val builder = MediaItem.Builder()
             .setMediaId(id)
             .setUri(Uri.parse(uriString))
             .setMediaMetadata(metadata)
-            .build()
+
+        // CUE virtual track: apply time clipping so ExoPlayer plays only the slice
+        if (isCueTrack && cueStartMs != null) {
+            val endUs = if (cueEndMs != null) cueEndMs * 1000L else C.TIME_UNSET
+            builder.setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder()
+                    .setStartPositionMs(cueStartMs)
+                    .setEndPositionMs(if (cueEndMs != null) cueEndMs else C.TIME_END_OF_SOURCE)
+                    .build()
+            )
+        }
+
+        return builder.build()
     }
 }
 

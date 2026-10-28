@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.GraphicEq
@@ -61,8 +63,11 @@ fun SettingsScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val isDownloadingArtwork by viewModel.isDownloadingArtwork.collectAsStateWithLifecycle()
     val sleepRemainingMs by viewModel.sleepTimerRemainingMs.collectAsStateWithLifecycle()
     val outputInfo = remember(settings.audioOutputMode) { viewModel.currentOutputRouteInfo() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasAllAccess = viewModel.hasAllFilesAccess()
     var showLicensesDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
@@ -245,6 +250,61 @@ fun SettingsScreen(
                         }
                     }
 
+                    if (!hasAllAccess) {
+                        HorizontalDivider()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "All Files Access (CUE & Covers)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Required on Android 11+ to discover .cue sheets and read companion lyrics.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = { viewModel.requestAllFilesAccess(context) }) {
+                                Text("Grant")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Missing Album Artwork",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (isDownloadingArtwork) "Downloading high-res covers from iTunes & Deezer..."
+                                else "Auto-downloads 600x600 covers for albums without artwork",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalButton(
+                            onClick = viewModel::downloadMissingArtwork,
+                            enabled = !isDownloadingArtwork
+                        ) {
+                            Text(if (isDownloadingArtwork) "Downloading..." else "Download Art")
+                        }
+                    }
+
                     HorizontalDivider()
 
                     Text(
@@ -374,7 +434,7 @@ fun EqualizerBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -388,7 +448,7 @@ fun EqualizerBottomSheet(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = if (eqState.audioSessionId > 0) "Bound to AudioSession #${eqState.audioSessionId}" else "Inactive Session",
+                        text = if (eqState.audioSessionId > 0) "Session #${eqState.audioSessionId} · ${eqState.bands.size} bands" else "Inactive Session",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -403,38 +463,59 @@ fun EqualizerBottomSheet(
 
             if (!eqState.isSupportedByDevice) {
                 Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = eqState.errorReason
-                            ?: "Equalizer effect is not supported on the active audio session or output route. Start playback first or switch audio routes.",
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(onClick = viewModel::resetEqualizerFlat) {
-                        Text("Reset (0 dB)")
-                    }
-                    eqState.presets.take(3).forEachIndexed { index, presetName ->
-                        FilterChip(
-                            selected = eqState.selectedPresetIndex == index,
-                            onClick = { viewModel.applyEqualizerPreset(index) },
-                            label = { Text(presetName) }
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Equalizer is Standby",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = eqState.errorReason
+                                ?: "Start playing music to bind the hardware equalizer to the active audio route.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
+            } else {
+                // Presets horizontal scroll row
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Presets",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = eqState.selectedPresetIndex == -1,
+                                onClick = viewModel::resetEqualizerFlat,
+                                label = { Text("Flat (0 dB)") }
+                            )
+                        }
+                        itemsIndexed(eqState.presets) { index, presetName ->
+                            FilterChip(
+                                selected = eqState.selectedPresetIndex == index,
+                                onClick = { viewModel.applyEqualizerPreset(index) },
+                                label = { Text(presetName) }
+                            )
+                        }
+                    }
+                }
 
+                HorizontalDivider()
+
+                // Bands sliders list
                 LazyColumn(
-                    modifier = Modifier.heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(eqState.bands, key = { it.index }) { band ->
                         val freqLabel = if (band.centerFreqHz >= 1000) {
@@ -448,17 +529,17 @@ fun EqualizerBottomSheet(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(freqLabel, style = MaterialTheme.typography.labelLarge)
+                                Text(freqLabel, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
                                 Text(
                                     text = String.format(Locale.US, "%+.1f dB", dbValue),
                                     style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (dbValue != 0f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Slider(
                                 value = band.currentLevelMillibels.toFloat(),
                                 valueRange = band.minLevelMillibels.toFloat()..band.maxLevelMillibels.toFloat(),
-                                enabled = eqState.isEnabled,
                                 onValueChange = { newValue ->
                                     viewModel.setEqualizerBand(band.index, newValue.toInt().toShort())
                                 }

@@ -1,6 +1,12 @@
 package com.player.hifi.ui
 
 import android.content.ContentResolver
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -9,6 +15,7 @@ import com.player.hifi.core.database.PlaylistEntity
 import com.player.hifi.core.database.PlaylistTrackCrossRef
 import com.player.hifi.core.datastore.UserSettings
 import com.player.hifi.core.metadata.LyricsParser
+import com.player.hifi.core.metadata.OnlineArtworkFetcher
 import com.player.hifi.core.metadata.TrackLyrics
 import com.player.hifi.core.model.AlbumSummary
 import com.player.hifi.core.model.ArtistSummary
@@ -32,6 +39,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(FlowPreview::class)
 class PlayerViewModel(private val container: AppContainer) : ViewModel() {
@@ -44,6 +52,9 @@ class PlayerViewModel(private val container: AppContainer) : ViewModel() {
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    private val _isDownloadingArtwork = MutableStateFlow(false)
+    val isDownloadingArtwork: StateFlow<Boolean> = _isDownloadingArtwork.asStateFlow()
 
     private val rawTracks: StateFlow<List<Track>> = container.database.libraryDao()
         .observeAllTracks()
@@ -164,6 +175,97 @@ class PlayerViewModel(private val container: AppContainer) : ViewModel() {
                 safTreeUris = currentSettings.authorizedSafTreeUris
             )
             _isScanning.value = false
+        }
+    }
+
+    private fun isArtworkMissingOrInvalid(track: Track): Boolean {
+        val art = track.artworkUriString
+        if (art.isNullOrBlank()) return true
+        return !runCatching {
+            val u = Uri.parse(art)
+            if (u.scheme == "file") {
+                val f = File(u.path ?: return@runCatching false)
+                f.exists() && f.length() > 0
+            } else {
+                container.app.contentResolver.openFileDescriptor(u, "r")?.use { it.statSize > 0 } ?: false
+            }
+        }.getOrDefault(false)
+    }
+
+    fun hasAllFilesAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+    }
+
+    fun requestAllFilesAccess(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val intent = try {
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } catch (_: Exception) {
+                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            context.startActivity(intent)
+        }
+    }
+
+    fun downloadMissingArtwork() {
+        if (_isDownloadingArtwork.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _isDownloadingArtwork.value = true
+            try {
+                val tracks = rawTracks.value
+                val missingTracks = tracks.filter { isArtworkMissingOrInvalid(it) }
+                val albumsWithoutArt = missingTracks.groupBy { it.albumKey }
+                for ((_, group) in albumsWithoutArt) {
+                    val first = group.first()
+                    val artist = first.albumArtist.ifBlank { first.artist }
+                    val album = first.album
+                    val artworkUri = OnlineArtworkFetcher.fetchAlbumArtwork(
+                        context = container.app,
+                        artist = artist,
+                        album = album,
+                        trackTitle = first.title
+                    )
+                    if (artworkUri != null) {
+                        if (album.isNotBlank() && !album.equals("Unknown Album", ignoreCase = true) && !album.equals("AyuGram", ignoreCase = true)) {
+                            container.database.libraryDao().updateAlbumArtwork(album, artworkUri)
+                        }
+                        group.forEach { t ->
+                            container.database.libraryDao().updateTrackArtwork(t.id, artworkUri)
+                        }
+                    }
+                }
+            } finally {
+                _isDownloadingArtwork.value = false
+            }
+        }
+    }
+
+    fun fetchArtworkForTrack(track: Track) {
+        if (!isArtworkMissingOrInvalid(track)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val artist = track.albumArtist.ifBlank { track.artist }
+            val album = track.album
+            val artworkUri = OnlineArtworkFetcher.fetchAlbumArtwork(
+                context = container.app,
+                artist = artist,
+                album = album,
+                trackTitle = track.title
+            )
+            if (artworkUri != null) {
+                if (album.isNotBlank() && !album.equals("Unknown Album", ignoreCase = true) && !album.equals("AyuGram", ignoreCase = true)) {
+                    container.database.libraryDao().updateAlbumArtwork(album, artworkUri)
+                }
+                container.database.libraryDao().updateTrackArtwork(track.id, artworkUri)
+            }
         }
     }
 

@@ -1,24 +1,35 @@
 package com.player.hifi.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistPlay
@@ -26,14 +37,17 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,6 +65,8 @@ import com.player.hifi.core.model.PlaylistWithTracks
 import com.player.hifi.core.model.Track
 import com.player.hifi.ui.PlayerViewModel
 
+// ─── Folders ────────────────────────────────────────────────────────────────
+
 @Composable
 fun FoldersScreen(
     viewModel: PlayerViewModel,
@@ -58,8 +74,61 @@ fun FoldersScreen(
 ) {
     val folderMap by viewModel.folderMap.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    var expandedFolderPath by remember { mutableStateOf<String?>(null) }
 
+    // Navigation state: null = folder list, non-null = folder detail
+    var openedFolderPath by remember { mutableStateOf<String?>(null) }
+
+    AnimatedContent(
+        targetState = openedFolderPath,
+        transitionSpec = {
+            if (targetState != null) {
+                // Drill into folder
+                (slideInHorizontally(tween(300)) { it } + fadeIn(tween(200))) togetherWith
+                        (slideOutHorizontally(tween(300)) { -it } + fadeOut(tween(200)))
+            } else {
+                // Back to list
+                (slideInHorizontally(tween(300)) { -it } + fadeIn(tween(200))) togetherWith
+                        (slideOutHorizontally(tween(300)) { it } + fadeOut(tween(200)))
+            }
+        },
+        label = "FolderNavigation"
+    ) { currentFolder ->
+        if (currentFolder == null) {
+            // ── Folder list screen ──────────────────────────────────────────
+            FolderListScreen(
+                folderMap = folderMap,
+                excludedFolders = settings.excludedFolders,
+                onPickSafFolder = onPickSafFolder,
+                onOpenFolder = { openedFolderPath = it },
+                onExcludeFolder = viewModel::toggleExcludeFolder
+            )
+        } else {
+            // ── Folder detail screen ────────────────────────────────────────
+            val tracks = folderMap[currentFolder] ?: emptyList()
+            FolderDetailScreen(
+                folderPath = currentFolder,
+                tracks = tracks,
+                onBack = { openedFolderPath = null },
+                onPlayFolder = { viewModel.playTracks(tracks, 0) },
+                onPlayTrack = { idx -> viewModel.playTracks(tracks, idx) },
+                onPlayNext = { track -> viewModel.playNextInQueue(track) },
+                onExcludeFolder = {
+                    viewModel.toggleExcludeFolder(currentFolder)
+                    openedFolderPath = null
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderListScreen(
+    folderMap: Map<String, List<Track>>,
+    excludedFolders: Set<String>,
+    onPickSafFolder: () -> Unit,
+    onOpenFolder: (String) -> Unit,
+    onExcludeFolder: (String) -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +160,7 @@ fun FoldersScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        if (folderMap.isEmpty() && settings.excludedFolders.isEmpty()) {
+        if (folderMap.isEmpty() && excludedFolders.isEmpty()) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -121,97 +190,17 @@ fun FoldersScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                folderMap.entries.forEach { (folderPath, tracksInFolder) ->
-                    val isExpanded = expandedFolderPath == folderPath
-                    item(key = "folder_$folderPath") {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    expandedFolderPath = if (isExpanded) null else folderPath
-                                }
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                        Spacer(Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                text = folderPath.substringAfterLast('/').ifBlank { folderPath },
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "$folderPath · ${tracksInFolder.size} tracks",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                    Row {
-                                        IconButton(onClick = { viewModel.playTracks(tracksInFolder, 0) }) {
-                                            Icon(Icons.Default.PlayArrow, contentDescription = "Play Folder")
-                                        }
-                                        IconButton(onClick = { viewModel.toggleExcludeFolder(folderPath) }) {
-                                            Icon(Icons.Default.VisibilityOff, contentDescription = "Exclude Folder")
-                                        }
-                                    }
-                                }
-
-                                if (isExpanded) {
-                                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                                    tracksInFolder.forEachIndexed { idx, track ->
-                                        ListItem(
-                                            headlineContent = {
-                                                Text(
-                                                    text = track.fileName,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                            },
-                                            supportingContent = {
-                                                Text(
-                                                    text = "${track.title} · ${track.sourceMetadata.toPrimaryTechnicalLine()}",
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.bodySmall
-                                                )
-                                            },
-                                            trailingContent = {
-                                                IconButton(onClick = { viewModel.playNextInQueue(track) }) {
-                                                    Icon(Icons.Default.PlaylistPlay, contentDescription = "Play Next")
-                                                }
-                                            },
-                                            modifier = Modifier.clickable {
-                                                viewModel.playTracks(tracksInFolder, idx)
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                items(folderMap.entries.toList(), key = { "folder_${it.key}" }) { (folderPath, tracks) ->
+                    FolderCard(
+                        folderPath = folderPath,
+                        trackCount = tracks.size,
+                        onClick = { onOpenFolder(folderPath) },
+                        onPlay = { },  // Play handled in detail screen
+                        onExclude = { onExcludeFolder(folderPath) }
+                    )
                 }
 
-                if (settings.excludedFolders.isNotEmpty()) {
+                if (excludedFolders.isNotEmpty()) {
                     item(key = "excluded_header") {
                         Text(
                             text = "Excluded Folders",
@@ -222,7 +211,7 @@ fun FoldersScreen(
                         )
                     }
                     items(
-                        items = settings.excludedFolders.toList(),
+                        items = excludedFolders.toList(),
                         key = { "excl_$it" }
                     ) { excludedPath ->
                         OutlinedCard(modifier = Modifier.fillMaxWidth()) {
@@ -240,7 +229,7 @@ fun FoldersScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                TextButton(onClick = { viewModel.toggleExcludeFolder(excludedPath) }) {
+                                TextButton(onClick = { onExcludeFolder(excludedPath) }) {
                                     Text("Restore")
                                 }
                             }
@@ -251,6 +240,206 @@ fun FoldersScreen(
         }
     }
 }
+
+@Composable
+private fun FolderCard(
+    folderPath: String,
+    trackCount: Int,
+    onClick: () -> Unit,
+    onPlay: () -> Unit,
+    onExclude: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = colors.primaryContainer,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = null,
+                        tint = colors.onPrimaryContainer,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = folderPath.substringAfterLast('/').ifBlank { folderPath },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "$trackCount tracks · ${folderPath.substringBeforeLast('/').takeLast(40)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(onClick = onExclude) {
+                Icon(Icons.Default.VisibilityOff, contentDescription = "Exclude Folder",
+                    tint = colors.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun FolderDetailScreen(
+    folderPath: String,
+    tracks: List<Track>,
+    onBack: () -> Unit,
+    onPlayFolder: () -> Unit,
+    onPlayTrack: (Int) -> Unit,
+    onPlayNext: (Track) -> Unit,
+    onExcludeFolder: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val folderName = folderPath.substringAfterLast('/').ifBlank { folderPath }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Top bar
+        Surface(
+            color = colors.surface,
+            tonalElevation = 2.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilledTonalIconButton(
+                    onClick = onBack,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = colors.surfaceContainerHigh
+                    )
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = folderName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${tracks.size} tracks",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                FilledTonalIconButton(
+                    onClick = onPlayFolder,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = colors.primaryContainer,
+                        contentColor = colors.onPrimaryContainer
+                    )
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Play All")
+                }
+                IconButton(onClick = onExcludeFolder) {
+                    Icon(
+                        Icons.Default.VisibilityOff,
+                        contentDescription = "Exclude Folder",
+                        tint = colors.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(tracks, key = { _, t -> t.id }) { idx, track ->
+                ListItem(
+                    headlineContent = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = track.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (track.isCueTrack) {
+                                Surface(
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                                    color = colors.tertiaryContainer,
+                                    contentColor = colors.onTertiaryContainer
+                                ) {
+                                    Text(
+                                        text = "CUE",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    supportingContent = {
+                        val cueInfo = if (track.isCueTrack) " · CUE" else ""
+                        Text(
+                            text = "${track.artist} · ${track.sourceMetadata.toPrimaryTechnicalLine()}$cueInfo",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    },
+                    leadingContent = {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = colors.secondaryContainer,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Icon(
+                                    Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = colors.onSecondaryContainer,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        IconButton(onClick = { onPlayNext(track) }) {
+                            Icon(Icons.Default.PlaylistPlay, contentDescription = "Play Next")
+                        }
+                    },
+                    modifier = Modifier.clickable { onPlayTrack(idx) }
+                )
+                if (idx < tracks.lastIndex) {
+                    HorizontalDivider(modifier = Modifier.padding(start = 72.dp))
+                }
+            }
+        }
+    }
+}
+
+// ─── Playlists ───────────────────────────────────────────────────────────────
 
 @Composable
 fun PlaylistsScreen(viewModel: PlayerViewModel) {

@@ -12,6 +12,17 @@ import com.player.hifi.ui.PlayerAppShell
 import com.player.hifi.ui.PlayerViewModel
 
 class MainActivity : ComponentActivity() {
+    private var viewModelRef: PlayerViewModel? = null
+
+    override fun onResume() {
+        super.onResume()
+        viewModelRef?.let { vm ->
+            if (vm.hasAllFilesAccess()) {
+                vm.rescanLibrary()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -19,6 +30,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val vm: PlayerViewModel = viewModel(factory = PlayerViewModel.Factory(container))
+            viewModelRef = vm
             val settings by vm.settings.collectAsStateWithLifecycle()
 
             PlayerTheme(

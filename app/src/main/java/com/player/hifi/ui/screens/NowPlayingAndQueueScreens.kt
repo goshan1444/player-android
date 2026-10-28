@@ -1,8 +1,17 @@
 package com.player.hifi.ui.screens
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -39,7 +48,9 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
@@ -132,39 +143,135 @@ fun NowPlayingFullScreen(
     val playbackSpeed by viewModel.playbackSpeed.collectAsStateWithLifecycle()
     val playbackPitch by viewModel.playbackPitch.collectAsStateWithLifecycle()
     val decodedInfo by viewModel.decodedAudioInfo.collectAsStateWithLifecycle()
+    val sleepRemainingMs by viewModel.sleepTimerRemainingMs.collectAsStateWithLifecycle()
 
     var showTechDetailsSheet by remember { mutableStateOf(false) }
     var showSpeedPitchSheet by remember { mutableStateOf(false) }
     var showLyricsView by remember { mutableStateOf(false) }
     var loadedLyrics by remember { mutableStateOf<TrackLyrics?>(null) }
 
-    // Жесты строго по пальцу (1-к-1)
+    // Drag-based animations (1-к-1)
     val coverDragX = remember { Animatable(0f) }
     val screenDragY = remember { Animatable(0f) }
+    var fullHeightPx by remember { mutableFloatStateOf(2400f) }
+    var isDismissing by remember { mutableStateOf(false) }
 
     val activeTrack = track ?: return
     val outputInfo = remember(activeTrack) { viewModel.currentOutputRouteInfo() }
 
+    LaunchedEffect(Unit) {
+        screenDragY.snapTo(0f)
+        isDismissing = false
+    }
+
     LaunchedEffect(activeTrack.id) {
         loadedLyrics = viewModel.loadLyrics(context.contentResolver, activeTrack)
+        if (activeTrack.artworkUriString.isNullOrBlank()) {
+            viewModel.fetchArtworkForTrack(activeTrack)
+        }
     }
 
     val dragFractionY = (screenDragY.value / 900f).coerceIn(0f, 1f)
     val screenScale = 1f - (dragFractionY * 0.10f)
     val topCornerRadius = (dragFractionY * 32f).dp
 
+    // Smooth, single-phase collapse helper: animates down and dismisses without any snap or second animation
+    fun collapseWithAnimation() {
+        if (isDismissing) return
+        isDismissing = true
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        scope.launch {
+            screenDragY.animateTo(
+                targetValue = fullHeightPx,
+                animationSpec = tween(durationMillis = 240, easing = FastOutLinearInEasing)
+            )
+            onCollapse()
+        }
+    }
+
+    BackHandler(enabled = true) {
+        if (showLyricsView) {
+            showLyricsView = false
+        } else {
+            collapseWithAnimation()
+        }
+    }
+
+    // Full-screen lyrics overlay
+    if (showLyricsView) {
+        Surface(
+            color = colors.background,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    FilledTonalIconButton(
+                        onClick = { showLyricsView = false },
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = colors.surfaceContainerHigh
+                        )
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = activeTrack.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = activeTrack.artist,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(48.dp))
+                }
+                Spacer(Modifier.height(16.dp))
+                FullScreenLyricsContent(
+                    lyrics = loadedLyrics,
+                    currentPositionMs = positionMs,
+                    onSeekToLine = { timestampMs ->
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        viewModel.seekTo(timestampMs)
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        return
+    }
+
     Surface(
         color = colors.background,
         contentColor = colors.onBackground,
         modifier = Modifier
             .fillMaxSize()
+            .onSizeChanged { size ->
+                if (size.height > 0) fullHeightPx = size.height.toFloat()
+            }
             .offset { IntOffset(0, screenDragY.value.roundToInt()) }
             .graphicsLayer {
                 scaleX = screenScale
                 scaleY = screenScale
             }
             .clip(RoundedCornerShape(topStart = topCornerRadius, topEnd = topCornerRadius))
-            .pointerInput(Unit) {
+            .pointerInput(isDismissing) {
+                if (isDismissing) return@pointerInput
                 detectVerticalDragGestures(
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
@@ -172,12 +279,8 @@ fun NowPlayingFullScreen(
                         scope.launch { screenDragY.snapTo(nextY) }
                     },
                     onDragEnd = {
-                        if (screenDragY.value > 200f) {
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            scope.launch {
-                                screenDragY.snapTo(0f)
-                                onCollapse()
-                            }
+                        if (screenDragY.value > 140f) {
+                            collapseWithAnimation()
                         } else {
                             scope.launch {
                                 screenDragY.animateTo(
@@ -205,14 +308,14 @@ fun NowPlayingFullScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 1. ЧИСТАЯ ВЕРХНЯЯ ПАНЕЛЬ В ЦВЕТАХ MD3
+            // 1. Top bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 FilledTonalIconButton(
-                    onClick = onCollapse,
+                    onClick = { collapseWithAnimation() },
                     colors = IconButtonDefaults.filledTonalIconButtonColors(
                         containerColor = colors.surfaceContainerHigh,
                         contentColor = colors.onSurface
@@ -259,7 +362,7 @@ fun NowPlayingFullScreen(
                 }
             }
 
-            // 2. СТРОГАЯ КВАДРАТНАЯ РАМКА ОБЛОЖКИ (СЛЕДУЕТ ЗА ПАЛЬЦЕМ 1-К-1)
+            // 2. Album cover (swipeable horizontally for skip)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -267,115 +370,103 @@ fun NowPlayingFullScreen(
                     .padding(vertical = 4.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (showLyricsView) {
-                    SyncedLyricsCard(
-                        lyrics = loadedLyrics,
-                        currentPositionMs = positionMs,
-                        onSeekToLine = { timestampMs ->
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            viewModel.seekTo(timestampMs)
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    val squareShape = RoundedCornerShape(24.dp)
-                    Surface(
-                        shape = squareShape,
-                        color = colors.surfaceContainerHigh,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                translationX = coverDragX.value
-                                val scale = 1f - (abs(coverDragX.value) / 2800f).coerceIn(0f, 0.06f)
-                                scaleX = scale
-                                scaleY = scale
-                            }
-                            .border(
-                                width = 1.5.dp,
-                                color = colors.outlineVariant.copy(alpha = 0.6f),
-                                shape = squareShape
-                            )
-                            .clip(squareShape)
-                            .pointerInput(activeTrack.id) {
-                                detectHorizontalDragGestures(
-                                    onHorizontalDrag = { change, dragAmount ->
-                                        change.consume()
-                                        scope.launch {
-                                            coverDragX.snapTo(
-                                                (coverDragX.value + dragAmount).coerceIn(-420f, 420f)
-                                            )
-                                        }
-                                    },
-                                    onDragEnd = {
-                                        val finalX = coverDragX.value
-                                        when {
-                                            finalX < -120f -> {
-                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                viewModel.skipNext()
-                                            }
-                                            finalX > 120f -> {
-                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                viewModel.skipPrevious()
-                                            }
-                                        }
-                                        scope.launch {
-                                            coverDragX.animateTo(
-                                                targetValue = 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                    stiffness = Spring.StiffnessMedium
-                                                )
-                                            )
-                                        }
-                                    },
-                                    onDragCancel = {
-                                        scope.launch { coverDragX.animateTo(0f, spring()) }
+                val squareShape = RoundedCornerShape(24.dp)
+                Surface(
+                    shape = squareShape,
+                    color = colors.surfaceContainerHigh,
+                    tonalElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = coverDragX.value
+                            val scale = 1f - (abs(coverDragX.value) / 2800f).coerceIn(0f, 0.06f)
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .border(
+                            width = 1.5.dp,
+                            color = colors.outlineVariant.copy(alpha = 0.6f),
+                            shape = squareShape
+                        )
+                        .clip(squareShape)
+                        .pointerInput(activeTrack.id) {
+                            detectHorizontalDragGestures(
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    scope.launch {
+                                        coverDragX.snapTo(
+                                            (coverDragX.value + dragAmount).coerceIn(-420f, 420f)
+                                        )
                                     }
-                                )
-                            }
-                            .pointerInput(activeTrack.id) {
-                                detectTapGestures(
-                                    onDoubleTap = { tapOffset ->
-                                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        if (tapOffset.x < size.width / 2f) {
-                                            viewModel.seekByDelta(-10_000L)
-                                        } else {
-                                            viewModel.seekByDelta(10_000L)
+                                },
+                                onDragEnd = {
+                                    val finalX = coverDragX.value
+                                    when {
+                                        finalX < -120f -> {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            viewModel.skipNext()
                                         }
-                                    },
-                                    onLongPress = {
-                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        showTechDetailsSheet = true
+                                        finalX > 120f -> {
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            viewModel.skipPrevious()
+                                        }
                                     }
-                                )
-                            }
-                    ) {
-                        if (activeTrack.artworkUriString != null) {
-                            AsyncImage(
-                                model = activeTrack.artworkUriString,
-                                contentDescription = "Album Artwork",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                                    scope.launch {
+                                        coverDragX.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMedium
+                                            )
+                                        )
+                                    }
+                                },
+                                onDragCancel = {
+                                    scope.launch { coverDragX.animateTo(0f, spring()) }
+                                }
                             )
-                        } else {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Album,
-                                    contentDescription = null,
-                                    tint = colors.onSurfaceVariant.copy(alpha = 0.35f),
-                                    modifier = Modifier.size(110.dp)
-                                )
-                            }
+                        }
+                        .pointerInput(activeTrack.id) {
+                            detectTapGestures(
+                                onDoubleTap = { tapOffset ->
+                                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    if (tapOffset.x < size.width / 2f) {
+                                        viewModel.seekByDelta(-10_000L)
+                                    } else {
+                                        viewModel.seekByDelta(10_000L)
+                                    }
+                                },
+                                onLongPress = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showTechDetailsSheet = true
+                                }
+                            )
+                        }
+                ) {
+                    if (activeTrack.artworkUriString != null) {
+                        AsyncImage(
+                            model = activeTrack.artworkUriString,
+                            contentDescription = "Album Artwork",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Album,
+                                contentDescription = null,
+                                tint = colors.onSurfaceVariant.copy(alpha = 0.35f),
+                                modifier = Modifier.size(110.dp)
+                            )
                         }
                     }
                 }
             }
 
-            // 3. НАЗВАНИЕ ТРЕКА, АРТИСТ И ТЕХНИЧЕСКИЙ БЕЙДЖ (ПОД ОБЛОЖКОЙ)
+            // 3. Track info
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -417,37 +508,59 @@ fun NowPlayingFullScreen(
                     }
                 }
 
-                // Техническая капсула MD3 (Format · Bitrate · Bit Depth · Sample Rate)
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = colors.secondaryContainer,
-                    contentColor = colors.onSecondaryContainer,
-                    modifier = Modifier
-                        .align(Alignment.Start)
-                        .clickable { showTechDetailsSheet = true }
+                // Technical badge + CUE indicator
+                Row(
+                    modifier = Modifier.align(Alignment.Start),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = colors.secondaryContainer,
+                        contentColor = colors.onSecondaryContainer,
+                        modifier = Modifier.clickable { showTechDetailsSheet = true }
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.HighQuality,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = activeTrack.sourceMetadata.toPrimaryTechnicalLine(" · "),
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.HighQuality,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
                             )
-                        )
+                            Text(
+                                text = activeTrack.sourceMetadata.toPrimaryTechnicalLine(" · "),
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
+                    }
+
+                    if (activeTrack.isCueTrack) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = colors.tertiaryContainer,
+                            contentColor = colors.onTertiaryContainer,
+                            modifier = Modifier.clickable { showTechDetailsSheet = true }
+                        ) {
+                            Text(
+                                text = "CUE SHEET",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                        }
                     }
                 }
             }
 
-            // 4. ВОЛНИСТЫЙ ПРОГРЕСС-БАР И КАПСУЛЫ ВРЕМЕНИ В ЦВЕТАХ ТЕМЫ MD3
+            // 4. Seek bar
             val totalDuration = durationMs.takeIf { it > 0 } ?: activeTrack.durationMs.coerceAtLeast(1L)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -493,7 +606,7 @@ fun NowPlayingFullScreen(
                 }
             }
 
-            // 5. ГЛАВНЫЙ ДОК УПРАВЛЕНИЯ MD3 (БЕЗ ЛИШНИХ КНОПОК: ТОЛЬКО PREV, PLAY/PAUSE, NEXT)
+            // 5. Playback controls
             Surface(
                 shape = RoundedCornerShape(50),
                 color = colors.surfaceContainerHigh,
@@ -566,10 +679,10 @@ fun NowPlayingFullScreen(
                 }
             }
 
-            // 6. КОМПАКТНЫЙ РЯД ПИЛЮЛЬ MD3 (Shuffle | Lyrics | Repeat | Queue)
+            // 6. Action pills row — Shuffle | Lyrics | Timer | Repeat | Queue
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Md3ActionPill(
@@ -592,11 +705,22 @@ fun NowPlayingFullScreen(
                     },
                     modifier = Modifier.weight(1f)
                 )
+                // Sleep timer pill — shows remaining time if active
+                Md3ActionPill(
+                    icon = Icons.Default.Bedtime,
+                    label = if (sleepRemainingMs != null) formatTimerMs(sleepRemainingMs!!) else "Timer",
+                    isActive = sleepRemainingMs != null,
+                    onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onOpenSleepTimer()
+                    },
+                    modifier = Modifier.weight(1f)
+                )
                 Md3ActionPill(
                     icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                     label = when (repeatMode) {
-                        Player.REPEAT_MODE_ONE -> "Repeat 1"
-                        Player.REPEAT_MODE_ALL -> "All"
+                        Player.REPEAT_MODE_ONE -> "Rep·1"
+                        Player.REPEAT_MODE_ALL -> "Rep·All"
                         else -> "Repeat"
                     },
                     isActive = repeatMode != Player.REPEAT_MODE_OFF,
@@ -670,6 +794,15 @@ fun NowPlayingFullScreen(
                 Text("Source Bit Depth: ${meta.sourceBitDepth.formatForBadge()}")
                 Text("Source Sample Rate: ${meta.formatSampleRate()}")
                 Text("Channels: ${meta.channelCount ?: "Unknown"}")
+                if (activeTrack.isCueTrack) {
+                    Text(
+                        "Track Source: CUE Sheet Virtual Track (${formatPlaybackDurationMs(activeTrack.cueStartMs ?: 0L)} – ${formatPlaybackDurationMs(activeTrack.cueEndMs ?: activeTrack.durationMs)})",
+                        color = colors.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Text("Track Source: Standalone Audio File")
+                }
 
                 HorizontalDivider()
                 Text("B. Decoded Audio Information (Media3 PCM Stream)", style = MaterialTheme.typography.titleSmall, color = colors.primary)
@@ -706,6 +839,8 @@ fun NowPlayingFullScreen(
         }
     }
 }
+
+// ─── Seek bar ──────────────────────────────────────────────────────────────
 
 @Composable
 private fun TouchDrivenWavySeekBar(
@@ -797,6 +932,8 @@ private fun TouchDrivenWavySeekBar(
     }
 }
 
+// ─── Action pill ────────────────────────────────────────────────────────────
+
 @Composable
 private fun Md3ActionPill(
     icon: ImageVector,
@@ -815,7 +952,7 @@ private fun Md3ActionPill(
             .clickable(onClick = onClick)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp),
+            modifier = Modifier.padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -824,10 +961,10 @@ private fun Md3ActionPill(
                 contentDescription = label,
                 modifier = Modifier.size(16.dp)
             )
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(4.dp))
             Text(
                 text = label,
-                fontSize = 12.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -836,8 +973,10 @@ private fun Md3ActionPill(
     }
 }
 
+// ─── Full-screen lyrics ──────────────────────────────────────────────────────
+
 @Composable
-private fun SyncedLyricsCard(
+private fun FullScreenLyricsContent(
     lyrics: TrackLyrics?,
     currentPositionMs: Long,
     onSeekToLine: (Long) -> Unit,
@@ -852,60 +991,51 @@ private fun SyncedLyricsCard(
     }
 
     LaunchedEffect(activeIndex) {
-        if (activeIndex >= 0) {
+        if (activeIndex >= 1) {
             listState.animateScrollToItem((activeIndex - 1).coerceAtLeast(0))
         }
     }
 
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = colors.surfaceContainerHigh,
-        tonalElevation = 4.dp,
-        modifier = modifier.border(
-            width = 1.5.dp,
-            color = colors.outlineVariant.copy(alpha = 0.6f),
-            shape = RoundedCornerShape(24.dp)
-        )
-    ) {
-        if (lyrics == null || lyrics.lines.isEmpty()) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp)
-            ) {
+    if (lyrics == null || lyrics.lines.isEmpty()) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "No embedded lyrics or companion .lrc file found for this track.",
+                color = colors.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge
+            )
+        }
+    } else {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(vertical = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            modifier = modifier.fillMaxWidth()
+        ) {
+            itemsIndexed(lyrics.lines) { idx, line ->
+                val isCurrent = lyrics.isSynced && idx == activeIndex
                 Text(
-                    text = "No embedded lyrics or companion .lrc file found for this track.\n\nTap Lyrics again to return to artwork.",
-                    color = colors.onSurfaceVariant,
-                    textAlign = TextAlign.Center
+                    text = line.text,
+                    fontSize = if (isCurrent) 26.sp else 20.sp,
+                    fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.Normal,
+                    color = if (isCurrent) colors.primary else colors.onSurface.copy(alpha = 0.5f),
+                    lineHeight = if (isCurrent) 34.sp else 28.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = lyrics.isSynced) {
+                            onSeekToLine(line.timestampMs)
+                        }
+                        .padding(vertical = 4.dp)
                 )
-            }
-        } else {
-            LazyColumn(
-                state = listState,
-                contentPadding = PaddingValues(24.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                itemsIndexed(lyrics.lines) { idx, line ->
-                    val isCurrent = lyrics.isSynced && idx == activeIndex
-                    Text(
-                        text = line.text,
-                        fontSize = if (isCurrent) 20.sp else 16.sp,
-                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isCurrent) colors.primary else colors.onSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(enabled = lyrics.isSynced) {
-                                onSeekToLine(line.timestampMs)
-                            }
-                            .padding(vertical = 4.dp)
-                    )
-                }
             }
         }
     }
 }
+
+// ─── Queue bottom sheet ──────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -979,7 +1109,16 @@ fun QueueBottomSheet(
     }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 fun formatPlaybackDurationMs(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return String.format(Locale.US, "%d:%02d", minutes, seconds)
+}
+
+private fun formatTimerMs(durationMs: Long): String {
     val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L

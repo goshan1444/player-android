@@ -73,7 +73,7 @@ class DeviceEqualizerController {
                 bands = emptyList(),
                 presets = emptyList(),
                 selectedPresetIndex = -1,
-                errorReason = "Equalizer unavailable on current route: ${e.localizedMessage ?: "Hardware rejected effect"}"
+                errorReason = "Equalizer unavailable: ${e.localizedMessage ?: "Hardware effect initialization failed"}"
             )
         }
     }
@@ -94,8 +94,11 @@ class DeviceEqualizerController {
     fun setBandLevel(bandIndex: Short, levelMillibels: Short): Map<Short, Short> {
         val eq = equalizer ?: return emptyMap()
         runCatching {
+            if (!eq.enabled) {
+                eq.enabled = true
+            }
             eq.setBandLevel(bandIndex, levelMillibels)
-            refreshStateFromHardware()
+            refreshStateFromHardware(selectedPreset = -1)
         }
         return currentBandMap()
     }
@@ -104,6 +107,9 @@ class DeviceEqualizerController {
         val eq = equalizer ?: return emptyMap()
         runCatching {
             if (presetIndex in 0 until eq.numberOfPresets) {
+                if (!eq.enabled) {
+                    eq.enabled = true
+                }
                 eq.usePreset(presetIndex.toShort())
                 refreshStateFromHardware(selectedPreset = presetIndex)
             }

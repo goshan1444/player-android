@@ -80,6 +80,15 @@ class PlaybackService : MediaSessionService() {
                 appContainer.onActiveMediaItemChanged(mediaItem?.mediaId)
             }
 
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    val sessionId = exoPlayer.audioSessionId
+                    if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId > 0) {
+                        appContainer.onAudioSessionIdChanged(sessionId)
+                    }
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 appContainer.onPlaybackError(
                     "Unable to play this file (${error.errorCodeName}). The audio format may be unsupported or the file may be damaged."
@@ -99,6 +108,11 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         appContainer.attachServicePlayer(exoPlayer)
+
+        val initialSessionId = exoPlayer.audioSessionId
+        if (initialSessionId != C.AUDIO_SESSION_ID_UNSET && initialSessionId > 0) {
+            appContainer.onAudioSessionIdChanged(initialSessionId)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {

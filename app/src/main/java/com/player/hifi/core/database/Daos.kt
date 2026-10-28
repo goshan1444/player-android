@@ -35,6 +35,12 @@ interface LibraryDao {
     @Query("UPDATE tracks SET lastPlayedEpochMillis = :timestampMs, playCount = playCount + 1 WHERE id = :trackId")
     suspend fun recordTrackPlayed(trackId: String, timestampMs: Long)
 
+    @Query("UPDATE tracks SET artworkUriString = :artworkUri WHERE album = :album")
+    suspend fun updateAlbumArtwork(album: String, artworkUri: String)
+
+    @Query("UPDATE tracks SET artworkUriString = :artworkUri WHERE id = :trackId")
+    suspend fun updateTrackArtwork(trackId: String, artworkUri: String)
+
     @Query("SELECT * FROM playlists ORDER BY createdAtEpochMs DESC")
     fun observePlaylists(): Flow<List<PlaylistEntity>>
 
